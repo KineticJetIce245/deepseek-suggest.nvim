@@ -2,12 +2,6 @@
 
 ![vibe coded](https://img.shields.io/badge/vibe--coded-true-7c3aed)
 
-> **Vibe coded** — this project was built with the help of AI assistants.
-
-> **For personal use** — this is a hobby/vibecoded project built for personal
-> use. The repository will **not** be maintained for the foreseeable future.
-> Feel free to use it, but **at your own risk** — no guarantees, no support.
-
 Copilot-style inline code suggestions in Neovim powered by the
 [DeepSeek API](https://platform.deepseek.com), integrated with
 [blink.cmp](https://github.com/Saghen/blink.cmp) as a completion source.
@@ -18,6 +12,13 @@ Works on any platform (Windows, macOS, Linux).
 It uses DeepSeek's official **FIM (fill-in-the-middle)** beta endpoint, which is
 purpose-built for code completion: it receives the code before *and* after the
 cursor and returns exactly the text that fits in between.
+
+## NOTE
+> **Vibe coded** — this project was built with the help of AI assistants.
+
+**For personal use** — this is a hobby/vibecoded project built for personal use.
+The repository will **not** be maintained for the foreseeable future.
+Feel free to use it, but **at your own risk** — no guarantees, no support.
 
 ## Requirements
 
