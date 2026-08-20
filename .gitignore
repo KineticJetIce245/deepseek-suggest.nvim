@@ -1,0 +1,3 @@
+# test artifacts
+tests/request_body.txt
+tests/server.pid
