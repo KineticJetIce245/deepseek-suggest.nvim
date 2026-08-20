@@ -191,7 +191,3 @@ stale suggestions appear.
   insert mode once, just enter insert mode and try again.
 - **Cost**: lower `debounce` impact by keeping `revalidate_on_keyword = false`,
   and cap `max_tokens` to what you need.
-
-## License
-
-MIT
