@@ -4,6 +4,10 @@
 
 > **Vibe coded** — this project was built with the help of AI assistants.
 
+> **For personal use** — this is a hobby/vibecoded project built for personal
+> use. The repository will **not** be maintained for the foreseeable future.
+> Feel free to use it, but **at your own risk** — no guarantees, no support.
+
 Copilot-style inline code suggestions in Neovim powered by the
 [DeepSeek API](https://platform.deepseek.com), integrated with
 [blink.cmp](https://github.com/Saghen/blink.cmp) as a completion source.
