@@ -15,8 +15,6 @@ It uses DeepSeek's official **FIM (fill-in-the-middle)** beta endpoint, which is
 purpose-built for code completion: it receives the code before *and* after the
 cursor and returns exactly the text that fits in between.
 
-![ghost-text](https://user-images.githubusercontent.com/1/demo-placeholder.png)
-
 ## Requirements
 
 - Neovim 0.10+
