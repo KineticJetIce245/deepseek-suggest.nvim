@@ -42,6 +42,9 @@ do
   assert_eq(config.get().kind_icon, "🐋", "config: default kind_icon")
   assert_eq(config.get().kind_name, "DeepSeek", "config: default kind_name")
   assert_eq(config.get().kind_hl, false, "config: default kind_hl")
+  assert_eq(config.get().statusline, true, "config: statusline default true")
+  assert_eq(config.get().statusline_icon, "🐋", "config: default statusline_icon")
+  assert_eq(config.get().statusline_tokens, true, "config: statusline_tokens default true")
 
   config.setup({ api_key = "explicit", auto = false, max_tokens = 512 })
   assert_eq(config.get().api_key, "explicit", "config: explicit key wins")
@@ -95,7 +98,7 @@ do
   assert_eq(fim.model, "deepseek-v4-flash", "api: fim model")
   assert_eq(fim.prompt, "def f():\n", "api: fim prompt")
   assert_eq(fim.suffix, "    return", "api: fim suffix")
-  assert_eq(fim.max_tokens, 256, "api: fim max_tokens")
+  assert_eq(fim.max_tokens, 4096, "api: fim max_tokens")
 
   local fim_no_suffix = vim.json.decode(api.build_fim_body("x", "", cfg))
   check(fim_no_suffix.suffix == nil, "api: fim empty suffix omitted")
@@ -108,11 +111,12 @@ do
 
   local cfg_no_key = vim.tbl_deep_extend("force", vim.deepcopy(cfg), {})
   cfg_no_key.api_key = nil
-  local missing_key_err
-  api.complete({ prefix = "x", suffix = "", config = cfg_no_key }, function(e)
-    missing_key_err = e
+  local missing_key_err, missing_key_kind
+  api.complete({ prefix = "x", suffix = "", config = cfg_no_key }, function(e, _, k)
+    missing_key_err, missing_key_kind = e, k
   end)
   check(missing_key_err ~= nil and missing_key_err:find("API key", 1, true) ~= nil, "api: missing api key fails fast")
+  assert_eq(missing_key_kind, "no_key", "api: missing api key classified as no_key")
 end
 
 -- ===================== source (stubbed api) =====================
@@ -330,6 +334,45 @@ do
   end)
   check(got6 ~= nil and #got6.items == 0, "source: whitespace-only completion dropped")
 
+  -- --- label shows the whole resulting line, not just the added text
+  api.complete = function(_, cb)
+    cb(nil, "fib(n-1) + fib(n-2)\n")
+    return nil
+  end
+  config.setup({ api_key = "k", auto = true, debounce = 50 })
+  local got_line
+  src:get_completions({
+    bufnr = buf,
+    cursor = { 2, 5 },
+    line = "    return n",
+    bounds = { start_col = 1, length = 0 },
+  }, function(resp)
+    got_line = resp
+  end)
+  vim.wait(1000, function()
+    return got_line ~= nil
+  end)
+  assert_eq(
+    got_line.items[1].label,
+    "rfib(n-1) + fib(n-2)",
+    "source: label is the whole resulting line (current line + suggestion), indentation trimmed"
+  )
+
+  -- --- is_pending reflects an in-flight request
+  config.setup({ api_key = "k", auto = true, debounce = 500 })
+  local got_pending
+  local cancel_pending_test = src:get_completions({
+    bufnr = buf,
+    cursor = { 2, 5 },
+    line = "    return n",
+    bounds = { start_col = 1, length = 0 },
+  }, function(resp)
+    got_pending = resp
+  end)
+  check(src:is_pending(buf) == true, "source: pending while request is in flight")
+  cancel_pending_test()
+  check(src:is_pending(buf) == false, "source: not pending after cancel")
+
   -- --- label truncation is UTF-8 safe
   api.complete = function(_, cb)
     cb(nil, string.rep("é", 100))
@@ -372,6 +415,64 @@ do
   vim.api.nvim_set_current_buf(buf)
 
   api.complete = orig_complete
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+-- ===================== status (statusline hint) =====================
+
+do
+  local status = require("deepseek-suggest.status")
+  local config = require("deepseek-suggest.config")
+  local state = require("deepseek-suggest.state")
+
+  -- no lualine in the mock runtime, so injection must no-op gracefully
+  check(status.inject() == false, "status: inject no-ops without lualine")
+
+  local buf = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "def fib(n):", "    return n" })
+  vim.api.nvim_set_current_buf(buf)
+  vim.bo.filetype = "python"
+
+  config.setup({ api_key = "k" })
+  assert_eq(status.status(), "ok", "status: ok when connected and active for buffer")
+  config.setup({ api_key = "k", enabled = false })
+  check(status.status() == nil, "status: nil when plugin disabled")
+  config.setup({ api_key = "k", statusline = false })
+  check(status.status() == nil, "status: nil when statusline disabled")
+  config.setup({ api_key = "k", filetypes = { "lua" } })
+  check(status.status() == nil, "status: nil when filetype not allowed")
+
+  config.setup({ api_key = "k" })
+  state.set("no_balance")
+  assert_eq(status.status(), "no_balance", "status: yellow when no balance")
+  state.set("no_key")
+  assert_eq(status.status(), "no_key", "status: red when API key rejected")
+  state.set("ok")
+
+  local comp = status.lualine_component()
+  check(comp[1]() == "🐋 V4 Flash", "status: component shows whale + formatted model")
+  config.setup({ api_key = "k", model = "deepseek-v4-pro" })
+  check(status.lualine_component()[1]() == "🐋 V4 Pro", "status: model name formatted")
+  config.setup({ api_key = "k" })
+
+  -- token usage is hidden until used, then shown as 10.0K style
+  check(comp[1]() == "🐋 V4 Flash", "status: no token count before any usage")
+  state.add_usage("deepseek-v4-flash", 10000)
+  check(comp[1]() == "🐋 V4 Flash 10.0K", "status: token usage shown and formatted")
+  assert_eq(state.get_usage("deepseek-v4-flash"), 10000, "status: usage accumulated")
+  state.add_usage("deepseek-v4-flash", 500)
+  check(comp[1]() == "🐋 V4 Flash 10.5K", "status: usage accumulates")
+  config.setup({ api_key = "k", statusline_tokens = false })
+  check(status.lualine_component()[1]() == "🐋 V4 Flash", "status: token count hidden when statusline_tokens=false")
+  config.setup({ api_key = "k" })
+  check(status.lualine_status_icon()[1]() == "󰝥", "status: status icon is the wifi glyph")
+
+  vim.env.DEEPSEEK_API_KEY = nil
+  config.setup({ api_key = nil })
+  assert_eq(status.status(), "no_key", "status: red when no api key configured")
+  vim.env.DEEPSEEK_API_KEY = "env-test-key"
+  config.setup({ api_key = "k" })
+
   vim.api.nvim_buf_delete(buf, { force = true })
 end
 
@@ -441,19 +542,20 @@ do
     local api = require("deepseek-suggest.api")
 
     -- FIM mode
-    local done1, err1, text1
+    local done1, err1, text1, usage1
     api.complete({
       prefix = "def fib(n):\n",
       suffix = "    return fib(n-1) + fib(n-2)",
       config = { mode = "fim", base_url = "http://127.0.0.1:18080", model = "deepseek-v4-flash", max_tokens = 128, temperature = 0.2, api_key = "k", timeout_ms = 5000 },
-    }, function(e, t)
-      done1, err1, text1 = true, e, t
+    }, function(e, t, _, u)
+      done1, err1, text1, usage1 = true, e, t, u
     end)
     vim.wait(5000, function()
       return done1 ~= nil
     end)
     check(done1 == true and err1 == nil, "http: fim request completed")
     check(text1:find("fib", 1, true) ~= nil, "http: fim response text")
+    assert_eq(usage1, 42, "http: fim usage total_tokens")
 
     local f = io.open(body_file, "r")
     local sent = f and f:read("*a")
@@ -466,19 +568,20 @@ do
     assert_eq(sent_json.model, "deepseek-v4-flash", "http: request body model")
 
     -- chat mode
-    local done2, err2, text2
+    local done2, err2, text2, usage2
     api.complete({
       prefix = "def total():\n",
       suffix = "",
       config = { mode = "chat", base_url = "http://127.0.0.1:18080", model = "deepseek-v4-flash", max_tokens = 128, temperature = 0.2, api_key = "k", timeout_ms = 5000 },
-    }, function(e, t)
-      done2, err2, text2 = true, e, t
+    }, function(e, t, _, u)
+      done2, err2, text2, usage2 = true, e, t, u
     end)
     vim.wait(5000, function()
       return done2 ~= nil
     end)
     check(done2 == true and err2 == nil, "http: chat request completed")
     check(text2:find("total", 1, true) ~= nil, "http: chat response text")
+    assert_eq(usage2, 17, "http: chat usage total_tokens")
 
     local function local_cfg(timeout)
       return {
@@ -501,6 +604,16 @@ do
       return done4 ~= nil
     end)
     check(done4 == true and err4 ~= nil and err4:find("boom", 1, true) ~= nil, "http: api error surfaced")
+
+    -- 402 -> classified as no balance for the status bar
+    local done7, kind7
+    api.complete({ prefix = "NOBALANCE", suffix = "", config = local_cfg(5000) }, function(e, _, k)
+      done7, kind7 = true, k
+    end)
+    vim.wait(5000, function()
+      return done7 ~= nil
+    end)
+    check(done7 == true and kind7 == "no_balance", "http: 402 classified as no balance")
 
     -- invalid JSON
     local done5, err5

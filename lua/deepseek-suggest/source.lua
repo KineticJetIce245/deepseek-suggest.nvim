@@ -9,6 +9,7 @@
 local config = require("deepseek-suggest.config")
 local context = require("deepseek-suggest.context")
 local api = require("deepseek-suggest.api")
+local state_status = require("deepseek-suggest.state")
 
 local CompletionItemKind = vim.lsp.protocol.CompletionItemKind
 local PlainText = vim.lsp.protocol.InsertTextFormat.PlainText
@@ -64,6 +65,12 @@ function source:enabled(bufnr)
   return true
 end
 
+---@param bufnr? number
+---@return boolean
+function source:is_pending(bufnr)
+  return pending[bufnr or vim.api.nvim_get_current_buf()] ~= nil
+end
+
 function source:get_completions(ctx, callback)
   local cfg = config.get()
 
@@ -116,11 +123,13 @@ function source:get_completions(ctx, callback)
       return
     end
 
-    local cancel = api.complete({ prefix = prefix, suffix = suffix, config = cfg }, function(err, text)
+    local cancel = api.complete({ prefix = prefix, suffix = suffix, config = cfg }, function(err, text, status_kind, usage)
       if pending[bufnr] ~= state then
         return
       end
       pending[bufnr] = nil
+      state_status.set(status_kind or (err and "error" or "ok"))
+      state_status.add_usage(cfg.model, usage)
       if err then
         if cfg.notify_errors then
           vim.notify("deepseek-suggest: " .. err, vim.log.levels.ERROR, { title = "DeepSeekSuggest" })
@@ -135,10 +144,18 @@ function source:get_completions(ctx, callback)
         return
       end
 
+      -- the completion menu shows the whole resulting line (current line up to
+      -- the cursor plus the suggestion) instead of only the added text
       local first_line = text:match("^[^\r\n]*") or ""
-      local label = first_line
-      if vim.str_utfindex(first_line) > 80 then
-        label = first_line:sub(1, vim.str_byteindex(first_line, 80)) .. "…"
+      local line_prefix = ""
+      if ctx.line then
+        line_prefix = string.sub(ctx.line, 1, (ctx.cursor and ctx.cursor[2]) or 0)
+      end
+      local label = line_prefix .. first_line
+      -- drop leading indentation so the menu entry is not awkwardly indented
+      label = label:gsub("^[ \t]+", "")
+      if vim.str_utfindex(label) > 80 then
+        label = label:sub(1, vim.str_byteindex(label, 80)) .. "…"
       end
       if label == "" then
         label = "DeepSeek suggestion"

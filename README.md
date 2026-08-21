@@ -102,14 +102,45 @@ completion = {
 ### Completion menu icon
 
 Like the copilot source, the suggestion gets its own icon (a whale, DeepSeek's
-logo) in the completion popup. To switch to a Nerd Font robot AI icon or disable
-the custom icon:
+logo) in the completion popup. The menu also shows the **whole resulting line**
+(current line up to the cursor plus the suggested text) instead of only the
+text that would be added, which is easier to scan. Leading indentation is
+stripped so the menu entry is not awkwardly indented. To switch to a Nerd Font
+robot AI icon or disable the custom icon:
 
 ```lua
 opts = {
   kind_icon = "\u{EC20}", -- Nerd Font robot AI icon
   -- kind_icon = false,   -- fall back to blink.cmp's default kind icon
 }
+```
+
+### Status bar hint
+
+Like Copilot, a status bar indicator appears (lualine, which LazyVim ships)
+whenever the plugin is active for the current buffer. It looks like
+`🐋 V4 Flash 10.0K 󰝥` — the whale, the model name, the accumulated token usage
+and a wifi icon colored by the connection state:
+
+- **green** 󰝥 — connected (API key present, requests succeeding)
+- **red** 󰝥 — no API key configured
+- **yellow** 󰝥 — no balance left (API returned HTTP 402)
+
+Disable or restyle it with:
+
+```lua
+opts = {
+  statusline = false,            -- turn the status bar hint off
+  statusline_tokens = false,     -- hide the token usage counter
+  statusline_icon = "\u{EC20}",  -- different icon (default is the whale 🐋)
+}
+```
+
+A standalone helper is also exposed if you build your own statusline:
+
+```lua
+-- returns nil (inactive), "ok", "no_key" or "no_balance"
+require("deepseek-suggest.status").status()
 ```
 
 ### Manual mode
@@ -145,7 +176,7 @@ All options are passed to `setup()` (or via `opts` in the plugin spec).
 | `base_url`                 | `https://api.deepseek.com` | API base URL                                                  |
 | `model`                    | `deepseek-v4-flash`     | Model (`deepseek-v4-flash`, `deepseek-v4-pro`)                    |
 | `mode`                     | `"fim"`                 | `"fim"` (fast, fill-in-the-middle) or `"chat"` (chat prefix)      |
-| `max_tokens`               | `256`                   | Max tokens in the suggestion (FIM caps at 4096)                   |
+| `max_tokens`               | `4096`                   | Max tokens in the suggestion (FIM caps at 4096)                   |
 | `temperature`              | `0.2`                   | Sampling temperature                                              |
 | `debounce`                 | `300`                   | ms to wait after the last keystroke before requesting             |
 | `timeout_ms`               | `20000`                 | HTTP request timeout                                              |
@@ -162,6 +193,9 @@ All options are passed to `setup()` (or via `opts` in the plugin spec).
 | `kind_icon`                | `"🐋"`                  | Menu icon for the suggestion (`false` = blink.cmp default; `"\u{EC20}"` = Nerd Font robot AI icon) |
 | `kind_name`                | `"DeepSeek"`            | Kind text shown in the completion menu (`false` = default)         |
 | `kind_hl`                  | `false`                 | Highlight group for the menu icon                                  |
+| `statusline`               | `true`                  | Show a `🐋 DeepSeek` hint in the status bar (lualine) when active   |
+| `statusline_icon`          | `"🐋"`                  | Icon used in the status bar hint                                    |
+| `statusline_tokens`        | `true`                  | Show accumulated token usage in the status bar hint                 |
 | `lazyvim_integration`      | `true`                  | Enable LazyVim `<Tab>` accept + `vim.g.ai_cmp`                    |
 | `keymaps`                  | `{ suggest = "<C-g>" }` | Insert-mode keymaps (`false` disables all)                        |
 

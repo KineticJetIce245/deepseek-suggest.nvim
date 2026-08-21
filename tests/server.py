@@ -37,14 +37,32 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/beta/completions":
             if prompt == "FAIL":
                 return self._send(200, json.dumps({"error": {"message": "boom"}}))
+            if prompt == "NOBALANCE":
+                return self._send(402, json.dumps({"error": {"message": "Insufficient Balance"}}))
             if prompt == "GARBAGE":
                 return self._send(200, "this is not json")
             if prompt == "SLOW":
                 time.sleep(10)
                 return self._send(200, json.dumps({"choices": [{"text": "late"}]}))
-            return self._send(200, json.dumps({"choices": [{"text": "    return fib(n-1) + fib(n-2)"}]}))
+            return self._send(
+                200,
+                json.dumps(
+                    {
+                        "choices": [{"text": "    return fib(n-1) + fib(n-2)"}],
+                        "usage": {"total_tokens": 42},
+                    }
+                ),
+            )
         elif self.path == "/beta/chat/completions":
-            return self._send(200, json.dumps({"choices": [{"message": {"content": "    return total"}}]}))
+            return self._send(
+                200,
+                json.dumps(
+                    {
+                        "choices": [{"message": {"content": "    return total"}}],
+                        "usage": {"total_tokens": 17},
+                    }
+                ),
+            )
         else:
             return self._send(404, json.dumps({"error": {"message": "not found"}}))
 

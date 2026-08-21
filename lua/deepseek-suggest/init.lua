@@ -1,6 +1,7 @@
 local M = {}
 
 local config = require("deepseek-suggest.config")
+local status = require("deepseek-suggest.status")
 
 local setup_done = false
 local registered = false
@@ -125,6 +126,7 @@ function M.setup(opts)
   config.setup(opts)
   setup_done = true
   setup_keymaps(config.get())
+  status.ensure()
   if not register() then
     schedule_retry()
   end
