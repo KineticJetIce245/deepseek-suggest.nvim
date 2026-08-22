@@ -9,6 +9,7 @@
 local config = require("deepseek-suggest.config")
 local context = require("deepseek-suggest.context")
 local api = require("deepseek-suggest.api")
+local cost = require("deepseek-suggest.cost")
 local state_status = require("deepseek-suggest.state")
 
 local CompletionItemKind = vim.lsp.protocol.CompletionItemKind
@@ -30,6 +31,11 @@ local function cancel_pending(bufnr)
   if timer and not timer:is_closing() then
     timer:stop()
     timer:close()
+  end
+  local throttle = state.throttle
+  if throttle and not throttle:is_closing() then
+    throttle:stop()
+    throttle:close()
   end
   if state.cancel then
     local c = state.cancel
@@ -111,7 +117,7 @@ function source:get_completions(ctx, callback)
     keyword = string.sub(ctx.line, ctx.bounds.start_col, ctx.bounds.start_col + (ctx.bounds.length or 0) - 1)
   end
 
-  local state = { timer = nil, cancel = nil }
+  local state = { timer = nil, throttle = nil, cancel = nil }
   pending[bufnr] = state
 
   local timer = vim.uv.new_timer()
@@ -123,30 +129,65 @@ function source:get_completions(ctx, callback)
       return
     end
 
-    local cancel = api.complete({ prefix = prefix, suffix = suffix, config = cfg }, function(err, text, status_kind, usage)
+    -- single ghost-text item that is mutated and re-emitted as tokens stream in
+    local item
+    local latest = ""
+    local throttle = vim.uv.new_timer()
+    state.throttle = throttle
+
+    --- Builds (once) or mutates the shared completion item and emits it.
+    --- Re-emitting the same item table relies on blink.cmp appending the same
+    --- reference and the provider `max_items = 1` truncating to a single entry,
+    --- so the ghost text updates in place while the stream grows.
+    local function emit(text)
       if pending[bufnr] ~= state then
         return
       end
-      pending[bufnr] = nil
-      state_status.set(status_kind or (err and "error" or "ok"))
-      state_status.add_usage(cfg.model, usage)
-      if err then
-        if cfg.notify_errors then
-          vim.notify("deepseek-suggest: " .. err, vim.log.levels.ERROR, { title = "DeepSeekSuggest" })
+      local cleaned = text:gsub("%s+$", "")
+      if cleaned == "" then
+        return
+      end
+      if item and item.textEdit.newText == cleaned then
+        return -- unchanged, nothing new to show
+      end
+
+      if not item then
+        -- the completion menu shows the whole resulting line (current line up to
+        -- the cursor plus the suggestion) instead of only the added text
+        item = {
+          kind = CompletionItemKind.Text,
+          insertText = cleaned,
+          insertTextFormat = PlainText,
+          textEdit = {
+            newText = cleaned,
+            range = {
+              start = { line = line, character = col },
+              ["end"] = { line = line, character = col },
+            },
+          },
+        }
+        -- only filter on the keyword when one exists; otherwise let blink fall
+        -- back to the label so the item is never dropped by an empty filterText
+        if keyword ~= "" then
+          item.filterText = keyword
         end
-        callback({ items = {}, is_incomplete_forward = false, is_incomplete_backward = false })
-        return
+        -- give the item a dedicated kind/icon in the completion menu (like the
+        -- copilot source does); false leaves the blink.cmp default in place
+        if cfg.kind_name then
+          item.kind_name = cfg.kind_name
+        end
+        if cfg.kind_icon then
+          item.kind_icon = cfg.kind_icon
+        end
+        if cfg.kind_hl then
+          item.kind_hl = cfg.kind_hl
+        end
       end
 
-      text = text:gsub("%s+$", "")
-      if text == "" then
-        callback({ items = {}, is_incomplete_forward = false, is_incomplete_backward = false })
-        return
-      end
+      item.textEdit.newText = cleaned
+      item.insertText = cleaned
 
-      -- the completion menu shows the whole resulting line (current line up to
-      -- the cursor plus the suggestion) instead of only the added text
-      local first_line = text:match("^[^\r\n]*") or ""
+      local first_line = cleaned:match("^[^\r\n]*") or ""
       local line_prefix = ""
       if ctx.line then
         line_prefix = string.sub(ctx.line, 1, (ctx.cursor and ctx.cursor[2]) or 0)
@@ -160,43 +201,69 @@ function source:get_completions(ctx, callback)
       if label == "" then
         label = "DeepSeek suggestion"
       end
-
-      local item = {
-        label = label,
-        kind = CompletionItemKind.Text,
-        insertText = text,
-        insertTextFormat = PlainText,
-        textEdit = {
-          newText = text,
-          range = {
-            start = { line = line, character = col },
-            ["end"] = { line = line, character = col },
-          },
-        },
-      }
-      -- only filter on the keyword when one exists; otherwise let blink fall
-      -- back to the label so the item is never dropped by an empty filterText
-      if keyword ~= "" then
-        item.filterText = keyword
-      end
-
-      -- give the item a dedicated kind/icon in the completion menu (like the
-      -- copilot source does); false leaves the blink.cmp default in place
-      if cfg.kind_name then
-        item.kind_name = cfg.kind_name
-      end
-      if cfg.kind_icon then
-        item.kind_icon = cfg.kind_icon
-      end
-      if cfg.kind_hl then
-        item.kind_hl = cfg.kind_hl
-      end
+      item.label = label
 
       callback({
         items = { item },
         is_incomplete_forward = cfg.revalidate_on_keyword,
         is_incomplete_backward = false,
       })
+    end
+
+    -- streamed deltas are throttled so nvim redraws at most ~1/stream_throttle_ms
+    local function on_stream(text)
+      if pending[bufnr] ~= state then
+        return
+      end
+      latest = text
+      if throttle:is_closing() then
+        return
+      end
+      if not throttle:is_active() then
+        throttle:start(0, cfg.stream_throttle_ms, function()
+          if pending[bufnr] ~= state then
+            throttle:stop()
+            throttle:close()
+            return
+          end
+          emit(latest)
+        end)
+      end
+    end
+
+    local cancel = api.complete({ prefix = prefix, suffix = suffix, config = cfg, on_stream = on_stream }, function(err, text, status_kind, usage)
+      if pending[bufnr] ~= state then
+        return
+      end
+      state_status.set(status_kind or (err and "error" or "ok"))
+      local tokens = usage and usage.total_tokens
+      local peak = cfg.pricing_peak == true and true or (cfg.pricing_peak == false and false or nil)
+      state_status.add_usage(cfg.model, tokens, cost.compute_cost(usage, cfg.pricing, cfg.model, peak))
+      if throttle and not throttle:is_closing() then
+        throttle:stop()
+        throttle:close()
+      end
+      if err then
+        pending[bufnr] = nil
+        if cfg.notify_errors then
+          vim.notify("deepseek-suggest: " .. err, vim.log.levels.ERROR, { title = "DeepSeekSuggest" })
+        end
+        callback({ items = {}, is_incomplete_forward = false, is_incomplete_backward = false })
+        return
+      end
+
+      text = text:gsub("%s+$", "")
+      if text == "" then
+        pending[bufnr] = nil
+        callback({ items = {}, is_incomplete_forward = false, is_incomplete_backward = false })
+        return
+      end
+
+      -- skip a redundant final emit if the last streamed chunk already showed it
+      if not item or item.textEdit.newText ~= text then
+        emit(text)
+      end
+      pending[bufnr] = nil
     end)
     if pending[bufnr] == state then
       state.cancel = cancel

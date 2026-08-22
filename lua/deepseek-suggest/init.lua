@@ -182,4 +182,25 @@ function M.status()
   )
 end
 
+--- Summarizes the session token usage and estimated cost per model.
+---@return string
+function M.usage()
+  local state = require("deepseek-suggest.state")
+  local cost = require("deepseek-suggest.cost")
+  local all = state.get_all()
+  local models = vim.tbl_keys(all)
+  table.sort(models)
+  if #models == 0 then
+    return "DeepSeekSuggest: no usage recorded this session"
+  end
+  local lines = {}
+  for _, model in ipairs(models) do
+    local entry = all[model]
+    local cost_text = cost.rates(config.get().pricing, model) and cost.format_cost(entry.cost)
+      or "(no pricing configured)"
+    lines[#lines + 1] = string.format("%s: %s tokens, %s", model, vim.inspect(entry.tokens), cost_text)
+  end
+  return "DeepSeekSuggest usage:\n" .. table.concat(lines, "\n")
+end
+
 return M

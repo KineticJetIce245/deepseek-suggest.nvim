@@ -5,7 +5,7 @@
 
 local M = {}
 
-local state = { status = nil, usage = {} }
+local state = { status = nil, usage = {}, cost = {} }
 
 ---@param kind nil|"ok"|"no_key"|"no_balance"|"error"
 function M.set(kind)
@@ -17,14 +17,20 @@ function M.get()
   return state.status
 end
 
---- Adds tokens used by a model to the running total.
+--- Adds tokens and cost used by a model to the running totals.
 ---@param model string
----@param tokens number
-function M.add_usage(model, tokens)
-  if not model or not tokens or tokens <= 0 then
+---@param tokens? number
+---@param cost? number estimated USD
+function M.add_usage(model, tokens, cost)
+  if not model then
     return
   end
-  state.usage[model] = (state.usage[model] or 0) + tokens
+  if tokens and tokens > 0 then
+    state.usage[model] = (state.usage[model] or 0) + tokens
+  end
+  if cost and cost > 0 then
+    state.cost[model] = (state.cost[model] or 0) + cost
+  end
 end
 
 --- Total tokens used by a model in this session.
@@ -32,6 +38,30 @@ end
 ---@return number
 function M.get_usage(model)
   return state.usage[model] or 0
+end
+
+--- Estimated cost (USD) used by a model in this session.
+---@param model string
+---@return number
+function M.get_cost(model)
+  return state.cost[model] or 0
+end
+
+--- All tracked models with their token/cost totals.
+---@return table<string, { tokens: number, cost: number }>
+function M.get_all()
+  local all = {}
+  local models = {}
+  for model in pairs(state.usage) do
+    models[model] = true
+  end
+  for model in pairs(state.cost) do
+    models[model] = true
+  end
+  for model in pairs(models) do
+    all[model] = { tokens = M.get_usage(model), cost = M.get_cost(model) }
+  end
+  return all
 end
 
 return M

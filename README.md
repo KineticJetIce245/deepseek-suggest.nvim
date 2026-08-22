@@ -75,6 +75,7 @@ Plain lazy.nvim (non-LazyVim):
 >       name = "DeepSeek",
 >       module = "deepseek-suggest.source",
 >       async = true,
+>       max_items = 1, -- required for streaming ghost text to update in place
 >       score_offset = 100,
 >     },
 >   },
@@ -119,12 +120,13 @@ opts = {
 
 Like Copilot, a status bar indicator appears (lualine, which LazyVim ships)
 whenever the plugin is active for the current buffer. It looks like
-`🐋 V4 Flash 10.0K 󰝥` — the whale, the model name, the accumulated token usage
-and a wifi icon colored by the connection state:
+`🐋 V4 Flash 10.0K $0.07 ●` — the whale, the model name, the accumulated token
+usage, the estimated cost (when `pricing` is configured) and a circle colored
+by the connection state:
 
-- **green** 󰝥 — connected (API key present, requests succeeding)
-- **red** 󰝥 — no API key configured
-- **yellow** 󰝥 — no balance left (API returned HTTP 402)
+- **green** ● — connected (API key present, requests succeeding)
+- **red** ● — no API key configured
+- **yellow** ● — no balance left (API returned HTTP 402)
 
 Disable or restyle it with:
 
@@ -132,6 +134,7 @@ Disable or restyle it with:
 opts = {
   statusline = false,            -- turn the status bar hint off
   statusline_tokens = false,     -- hide the token usage counter
+  statusline_cost = false,       -- hide the estimated cost
   statusline_icon = "\u{EC20}",  -- different icon (default is the whale 🐋)
 }
 ```
@@ -142,6 +145,28 @@ A standalone helper is also exposed if you build your own statusline:
 -- returns nil (inactive), "ok", "no_key" or "no_balance"
 require("deepseek-suggest.status").status()
 ```
+
+### Cost tracking
+
+The plugin counts tokens and, when you configure per-model prices, estimates
+how much they cost. Prices are **not** bundled — add a `pricing` entry for your
+model and the cost appears in the status bar and in `:DeepseekSuggestUsage`:
+
+```lua
+opts = {
+  pricing = {
+    ["deepseek-v4-flash"] = { input_cache_hit = 0.007, input_cache_miss = 0.22, output = 0.66 },
+    ["deepseek-v4-pro"] = { input_cache_hit = 0.022, input_cache_miss = 0.66, output = 1.98 },
+  },
+  -- pricing_peak = "auto", -- "auto" | true | false (see Options)
+}
+```
+
+Prices are USD per 1M tokens (off-peak base) and go stale as DeepSeek adjusts
+them — check https://api-docs.deepseek.com/quick_start/pricing for current
+rates. The numbers here are a snapshot (off-peak); the cost is estimated and
+your exact billing lives on the DeepSeek platform. Run `:DeepseekSuggestUsage`
+anytime to see the session totals per model.
 
 ### Manual mode
 
@@ -163,6 +188,7 @@ at the cursor.
 | `:DeepseekSuggestEnable`       | Enable suggestions                       |
 | `:DeepseekSuggestDisable`      | Disable suggestions                      |
 | `:DeepseekSuggestStatus`       | Show plugin status                       |
+| `:DeepseekSuggestUsage`        | Show session token usage + estimated cost |
 
 ## Options
 
@@ -176,9 +202,11 @@ All options are passed to `setup()` (or via `opts` in the plugin spec).
 | `base_url`                 | `https://api.deepseek.com` | API base URL                                                  |
 | `model`                    | `deepseek-v4-flash`     | Model (`deepseek-v4-flash`, `deepseek-v4-pro`)                    |
 | `mode`                     | `"fim"`                 | `"fim"` (fast, fill-in-the-middle) or `"chat"` (chat prefix)      |
+| `stream`                   | `true`                  | Stream the completion (SSE) so ghost text appears progressively instead of waiting for the whole generation |
+| `stream_throttle_ms`       | `25`                    | Min interval between progressive ghost-text updates while streaming (caps redraw rate) |
 | `max_tokens`               | `4096`                   | Max tokens in the suggestion (FIM caps at 4096)                   |
 | `temperature`              | `0.2`                   | Sampling temperature                                              |
-| `debounce`                 | `300`                   | ms to wait after the last keystroke before requesting             |
+| `debounce`                 | `175`                   | ms to wait after the last keystroke before requesting             |
 | `timeout_ms`               | `20000`                 | HTTP request timeout                                              |
 | `prefix_lines`             | `100`                   | Lines of context sent before the cursor                           |
 | `suffix_lines`             | `20`                    | Lines of context sent after the cursor                            |
@@ -196,6 +224,9 @@ All options are passed to `setup()` (or via `opts` in the plugin spec).
 | `statusline`               | `true`                  | Show a `🐋 DeepSeek` hint in the status bar (lualine) when active   |
 | `statusline_icon`          | `"🐋"`                  | Icon used in the status bar hint                                    |
 | `statusline_tokens`        | `true`                  | Show accumulated token usage in the status bar hint                 |
+| `statusline_cost`          | `true`                  | Show estimated cost in the status bar hint (only when `pricing` is configured for the model) |
+| `pricing`                  | `{}`                    | Per-model USD prices per 1M tokens (`input_cache_hit`, `input_cache_miss`, `output`). Empty = no cost tracking |
+| `pricing_peak`             | `"auto"`                | `"auto"` apply 2x peak rates only during peak hours (01:00-04:00 / 06:00-10:00 UTC, weekends Beijing time off-peak); `true` always peak; `false` always off-peak |
 | `lazyvim_integration`      | `true`                  | Enable LazyVim `<Tab>` accept + `vim.g.ai_cmp`                    |
 | `keymaps`                  | `{ suggest = "<C-g>" }` | Insert-mode keymaps (`false` disables all)                        |
 
@@ -207,8 +238,9 @@ All options are passed to `setup()` (or via `opts` in the plugin spec).
    `suffix_lines`).
 3. After `debounce` ms, a request is sent with `curl` to
    `POST {base_url}/beta/completions` (`{ model, prompt, suffix, max_tokens,
-   temperature }`).
-4. The returned text becomes a single completion item with a `textEdit` at the
+   temperature }`). By default the response is **streamed** (SSE), so the ghost
+   text starts appearing after the first token and fills in progressively.
+4. The streamed text becomes a single completion item with a `textEdit` at the
    cursor. blink.cmp renders it as ghost text; accepting inserts it.
 
 Requests are cancelled when you keep typing or leave insert mode, so no

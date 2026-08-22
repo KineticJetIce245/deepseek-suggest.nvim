@@ -9,6 +9,7 @@
 local config = require("deepseek-suggest.config")
 local source = require("deepseek-suggest.source")
 local state = require("deepseek-suggest.state")
+local cost = require("deepseek-suggest.cost")
 
 local M = {}
 
@@ -90,6 +91,12 @@ function M.lualine_component()
         local used = state.get_usage(cfg.model)
         if used > 0 then
           text = text .. " " .. format_tokens(used)
+        end
+      end
+      if cfg.statusline_cost then
+        local c = state.get_cost(cfg.model)
+        if c > 0 then
+          text = text .. " " .. cost.format_cost(c)
         end
       end
       return text

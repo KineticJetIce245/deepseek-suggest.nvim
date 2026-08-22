@@ -45,6 +45,9 @@ do
   assert_eq(config.get().statusline, true, "config: statusline default true")
   assert_eq(config.get().statusline_icon, "🐋", "config: default statusline_icon")
   assert_eq(config.get().statusline_tokens, true, "config: statusline_tokens default true")
+  assert_eq(config.get().statusline_cost, true, "config: statusline_cost default true")
+  check(next(config.get().pricing) == nil, "config: pricing default empty")
+  assert_eq(config.get().pricing_peak, "auto", "config: pricing_peak default auto")
 
   config.setup({ api_key = "explicit", auto = false, max_tokens = 512 })
   assert_eq(config.get().api_key, "explicit", "config: explicit key wins")
@@ -117,6 +120,58 @@ do
   end)
   check(missing_key_err ~= nil and missing_key_err:find("API key", 1, true) ~= nil, "api: missing api key fails fast")
   assert_eq(missing_key_kind, "no_key", "api: missing api key classified as no_key")
+end
+
+-- ===================== cost (pricing) =====================
+
+do
+  local cost = require("deepseek-suggest.cost")
+  local pricing = {
+    ["deepseek-v4-flash"] = { input_cache_hit = 0.007, input_cache_miss = 0.22, output = 0.66 },
+  }
+
+  -- no pricing configured -> no rates, no cost
+  check(cost.rates({}, "deepseek-v4-flash") == nil, "cost: no rates without pricing")
+  check(cost.compute_cost({ total_tokens = 10 }, {}, "deepseek-v4-flash") == nil, "cost: nil cost without pricing")
+  check(cost.compute_cost(nil, pricing, "deepseek-v4-flash") == nil, "cost: nil cost without usage")
+
+  local rates = cost.rates(pricing, "deepseek-v4-flash")
+  assert_eq(rates.input_cache_hit, 0.007, "cost: rates input_cache_hit")
+  assert_eq(rates.input_cache_miss, 0.22, "cost: rates input_cache_miss")
+  assert_eq(rates.output, 0.66, "cost: rates output")
+  check(cost.rates(pricing, "deepseek-v4-pro") == nil, "cost: no rates for unconfigured model")
+
+  -- 500 cache-hit + 100 cache-miss input tokens, 50 output tokens, off-peak
+  local usage = { prompt_cache_hit_tokens = 500, prompt_cache_miss_tokens = 100, completion_tokens = 50 }
+  local expected_offpeak = 500 / 1e6 * 0.007 + 100 / 1e6 * 0.22 + 50 / 1e6 * 0.66
+  local c = cost.compute_cost(usage, pricing, "deepseek-v4-flash", false)
+  check(c ~= nil and math.abs(c - expected_offpeak) < 1e-9, "cost: off-peak estimate")
+  local c_peak = cost.compute_cost(usage, pricing, "deepseek-v4-flash", true)
+  check(c_peak ~= nil and math.abs(c_peak - expected_offpeak * 2) < 1e-9, "cost: peak is 2x off-peak")
+
+  -- fallback when the cache breakdown is missing
+  local c_fallback = cost.compute_cost({ prompt_tokens = 600, total_tokens = 650 }, pricing, "deepseek-v4-flash", false)
+  local expected_fallback = 600 / 1e6 * 0.22 + 50 / 1e6 * 0.66
+  check(c_fallback ~= nil and math.abs(c_fallback - expected_fallback) < 1e-9, "cost: falls back to prompt_tokens")
+
+  -- is_peak: build deterministic UTC timestamps regardless of local timezone
+  local function utc_at(base, weekday, hour)
+    local shift_days = (weekday - tonumber(os.date("!%u", base))) % 7
+    local shift_hours = (hour - tonumber(os.date("!%H", base))) % 24
+    return base + shift_days * 86400 + shift_hours * 3600
+  end
+  local base = os.time()
+  check(cost.is_peak(utc_at(base, 3, 2)) == true, "cost: weekday 02:00 UTC is peak") -- Wednesday
+  check(cost.is_peak(utc_at(base, 3, 8)) == true, "cost: weekday 08:00 UTC is peak")
+  check(cost.is_peak(utc_at(base, 3, 12)) == false, "cost: weekday 12:00 UTC is off-peak")
+  -- UTC Saturday 07:00 = Beijing Saturday 15:00 -> off-peak despite peak window
+  check(cost.is_peak(utc_at(base, 6, 7)) == false, "cost: weekend (Beijing) overrides peak hours")
+
+  assert_eq(cost.format_cost(0.0585), "$0.06", "cost: format 2 decimals")
+  assert_eq(cost.format_cost(0.003), "$0.00", "cost: tiny amounts round to 2 decimals")
+  assert_eq(cost.format_cost(1.234), "$1.23", "cost: format dollars")
+  assert_eq(cost.format_cost(0), "$0.00", "cost: format zero")
+  assert_eq(cost.format_cost(nil), "$0.00", "cost: format nil")
 end
 
 -- ===================== source (stubbed api) =====================
@@ -467,6 +522,30 @@ do
   config.setup({ api_key = "k" })
   check(status.lualine_status_icon()[1]() == "󰝥", "status: status icon is the wifi glyph")
 
+  -- cost is hidden until pricing is configured
+  check(status.lualine_component()[1]() == "🐋 V4 Flash 10.5K", "status: no cost shown without pricing")
+  config.setup({
+    api_key = "k",
+    statusline_tokens = false,
+    pricing = { ["deepseek-v4-flash"] = { input_cache_hit = 0.007, input_cache_miss = 0.22, output = 0.66 } },
+  })
+  state.add_usage("deepseek-v4-flash", nil, 0.0585)
+  check(status.lualine_component()[1]() == "🐋 V4 Flash $0.06", "status: cost shown when pricing configured")
+  config.setup({ api_key = "k", statusline_cost = false, pricing = { ["deepseek-v4-flash"] = {} } })
+  check(status.lualine_component()[1]() == "🐋 V4 Flash 10.5K", "status: cost hidden when statusline_cost=false")
+  config.setup({ api_key = "k" })
+
+  -- state accumulates cost
+  local state_cost = require("deepseek-suggest.state")
+  state_cost.add_usage("deepseek-v4-flash", 10, 0.005)
+  assert_eq(state_cost.get_usage("deepseek-v4-flash"), 10510, "cost: state tokens accumulated")
+  assert_eq(state_cost.get_cost("deepseek-v4-flash"), 0.0635, "cost: state cost accumulated")
+  local all_cost = state_cost.get_all()
+  assert_eq(all_cost["deepseek-v4-flash"].tokens, 10510, "cost: get_all tokens")
+  assert_eq(all_cost["deepseek-v4-flash"].cost, 0.0635, "cost: get_all cost")
+  state_cost.add_usage("deepseek-v4-flash", nil, nil)
+  assert_eq(state_cost.get_cost("deepseek-v4-flash"), 0.0635, "cost: nil cost ignored")
+
   vim.env.DEEPSEEK_API_KEY = nil
   config.setup({ api_key = nil })
   assert_eq(status.status(), "no_key", "status: red when no api key configured")
@@ -507,6 +586,10 @@ do
 
   local status = init.status()
   check(status:find("deepseek-v4-flash", 1, true) ~= nil, "init: status string")
+
+  local usage_text = init.usage()
+  check(usage_text:find("deepseek-v4-flash", 1, true) ~= nil, "init: usage lists model")
+  check(usage_text:find("tokens", 1, true) ~= nil, "init: usage shows tokens")
 end
 
 -- ===================== real HTTP request (local python server) =====================
@@ -555,7 +638,7 @@ do
     end)
     check(done1 == true and err1 == nil, "http: fim request completed")
     check(text1:find("fib", 1, true) ~= nil, "http: fim response text")
-    assert_eq(usage1, 42, "http: fim usage total_tokens")
+    assert_eq(usage1.total_tokens, 42, "http: fim usage total_tokens")
 
     local f = io.open(body_file, "r")
     local sent = f and f:read("*a")
@@ -581,7 +664,7 @@ do
     end)
     check(done2 == true and err2 == nil, "http: chat request completed")
     check(text2:find("total", 1, true) ~= nil, "http: chat response text")
-    assert_eq(usage2, 17, "http: chat usage total_tokens")
+    assert_eq(usage2.total_tokens, 17, "http: chat usage total_tokens")
 
     local function local_cfg(timeout)
       return {
@@ -634,6 +717,55 @@ do
       return done6 ~= nil
     end)
     check(done6 == true and err6 ~= nil, "http: slow request times out")
+
+    -- streaming: progressive partials + full text + usage
+    local partials = {}
+    local done8, err8, text8, usage8
+    api.complete({
+      prefix = "def fib(n):\n",
+      suffix = "    return fib(n-1) + fib(n-2)",
+      config = vim.tbl_extend("force", local_cfg(5000), { stream = true }),
+      on_stream = function(partial)
+        partials[#partials + 1] = partial
+      end,
+    }, function(e, t, _, u)
+      done8, err8, text8, usage8 = true, e, t, u
+    end)
+    vim.wait(5000, function()
+      return done8 ~= nil
+    end)
+    check(done8 == true and err8 == nil, "http: streamed request completed")
+    assert_eq(text8, "    return fib(n-1) + fib(n-2)", "http: streamed full text")
+    check(#partials >= 3, "http: on_stream fired progressively")
+    assert_eq(partials[#partials], text8, "http: last partial is the full text")
+    assert_eq(usage8.total_tokens, 42, "http: streamed usage total_tokens")
+
+    -- streaming with an error body is still classified (falls back to JSON)
+    local done9, kind9
+    api.complete(
+      { prefix = "NOBALANCE", suffix = "", config = vim.tbl_extend("force", local_cfg(5000), { stream = true }) },
+      function(_, _, k)
+        done9, kind9 = true, k
+      end
+    )
+    vim.wait(5000, function()
+      return done9 ~= nil
+    end)
+    check(done9 == true and kind9 == "no_balance", "http: streamed 402 still classified as no balance")
+
+    -- streaming an empty completion is not an error
+    local done10, err10, text10
+    api.complete(
+      { prefix = "STREAMEMPTY", suffix = "", config = vim.tbl_extend("force", local_cfg(5000), { stream = true }) },
+      function(e, t)
+        done10, err10, text10 = true, e, t
+      end
+    )
+    vim.wait(5000, function()
+      return done10 ~= nil
+    end)
+    check(done10 == true and err10 == nil, "http: empty streamed completion has no error")
+    assert_eq(text10, "", "http: empty streamed completion text")
 
     handle:kill()
   end)

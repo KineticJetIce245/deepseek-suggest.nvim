@@ -18,11 +18,17 @@ M.defaults = {
 	--- best for code). `chat` uses the chat prefix completion endpoint
 	--- (`/beta/chat/completions`).
 	mode = "fim",
+	--- Stream the completion (SSE) so ghost text appears progressively instead of
+	--- waiting for the whole generation to finish. Much snappier feel.
+	stream = true,
+	--- Minimum interval between progressive ghost-text updates while streaming,
+	--- in milliseconds. Caps the redraw rate regardless of how fast tokens stream.
+	stream_throttle_ms = 25,
 	--- Maximum number of tokens in the suggestion (FIM caps at 4096).
 	max_tokens = 4096,
 	temperature = 0.2,
 	--- Debounce in milliseconds before a request is sent while typing.
-	debounce = 300,
+	debounce = 175,
 	--- Timeout in milliseconds for the HTTP request.
 	timeout_ms = 20000,
 	--- Number of lines of code sent before the cursor as context.
@@ -65,6 +71,24 @@ M.defaults = {
 	--- Show the accumulated token usage in the status bar hint
 	--- (e.g. `🐋 V4 Flash 10.0K 󰝥`).
 	statusline_tokens = true,
+	--- Show the estimated cost (from `pricing`) in the status bar hint
+	--- (e.g. `🐋 V4 Flash 10.0K $0.07`). Only appears when a `pricing` entry
+	--- exists for the active model.
+	statusline_cost = true,
+	--- Per-model pricing in USD per 1M tokens (off-peak base), used to estimate
+	--- cost. Empty by default — without an entry for the active model no cost is
+	--- tracked or shown. Example:
+	---   pricing = {
+	---     ["deepseek-v4-flash"] = { input_cache_hit = 0.007, input_cache_miss = 0.22, output = 0.66 },
+	---     ["deepseek-v4-pro"] = { input_cache_hit = 0.022, input_cache_miss = 0.66, output = 1.98 },
+	---   }
+	pricing = {},
+	--- When to apply the 2x peak multiplier to the cost estimate:
+	---   "auto" -> apply only during peak hours (01:00-04:00 / 06:00-10:00 UTC,
+	---            weekends Beijing time are off-peak)
+	---   true   -> always apply peak rates
+	---   false  -> always use off-peak rates
+	pricing_peak = "auto",
 	--- Integrate with LazyVim's AI keymaps (`<Tab>` accepts the suggestion,
 	--- enables `vim.g.ai_cmp`). Only takes effect when LazyVim is detected.
 	lazyvim_integration = true,

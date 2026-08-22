@@ -27,3 +27,7 @@ end, { desc = "DeepSeekSuggest: disable suggestions" })
 vim.api.nvim_create_user_command("DeepseekSuggestStatus", function()
   vim.notify(require("deepseek-suggest").status(), vim.log.levels.INFO, { title = "DeepSeekSuggest" })
 end, { desc = "DeepSeekSuggest: show status" })
+
+vim.api.nvim_create_user_command("DeepseekSuggestUsage", function()
+  vim.notify(require("deepseek-suggest").usage(), vim.log.levels.INFO, { title = "DeepSeekSuggest" })
+end, { desc = "DeepSeekSuggest: show session token usage and estimated cost" })
